@@ -1,0 +1,106 @@
+# ==============================================================================
+# Docker Compose for Scooter Rental System (Production - EC2)
+# Hardened setup: Internal networking, log rotation, security boundaries
+# ==============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: scooter-prod-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - prod_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal-net
+
+  backend:
+    build:
+      context: ${BACKEND_PATH:-../backend}
+      dockerfile: ${INFRA_DOCKER_PATH:-docker}/Dockerfile.backend
+    container_name: scooter-prod-backend
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      APP_FRONTEND_URL: ${APP_FRONTEND_URL}
+      PAYMENTS_PROVIDER: ${PAYMENTS_PROVIDER:-stripe}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      GPS_DEVICE_API_KEY: ${GPS_DEVICE_API_KEY}
+      NOTIFICATIONS_EMAIL_PROVIDER: ${NOTIFICATIONS_EMAIL_PROVIDER:-}
+      NOTIFICATIONS_EMAIL_FROM: ${NOTIFICATIONS_EMAIL_FROM:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      REPAIR_PHOTO_DIR: /app/data/repair-photos
+      PAYMENT_IMAGE_DIR: /app/data/payment-images
+      MANUAL_PAYMENT_VERIFICATION_TIMEOUT_MINUTES: ${MANUAL_PAYMENT_VERIFICATION_TIMEOUT_MINUTES:-120}
+    volumes:
+      - prod_repair_photos:/app/data/repair-photos
+      - prod_payment_images:/app/data/payment-images
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - internal-net
+
+  frontend:
+    build:
+      context: ${FRONTEND_PATH:-../frontend}
+      dockerfile: ${INFRA_DOCKER_PATH:-docker}/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+    container_name: scooter-prod-frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - internal-net
+
+networks:
+  internal-net:
+    driver: bridge
+
+volumes:
+  prod_postgres_data:
+    name: scooter_prod_postgres_data
+  prod_repair_photos:
+    name: scooter_prod_repair_photos
+  prod_payment_images:
+    name: scooter_prod_payment_images

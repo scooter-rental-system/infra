@@ -1,0 +1,122 @@
+name: Full Stack CI/CD Deployment
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'develop'
+  repository_dispatch:
+    types: [deploy, frontend-updated, backend-updated]
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  test-backend:
+    name: Backend CI (Gradle & Test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          repository: scooter-rental-system/backend
+          ref: ${{ github.event.inputs.target_branch || github.ref_name || 'develop' }}
+          path: backend
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Run Backend Tests and Build JAR
+        working-directory: backend/spring
+        run: |
+          chmod +x ./gradlew
+          ./gradlew test --no-daemon
+          ./gradlew bootJar --no-daemon -x test
+
+  test-frontend:
+    name: Frontend CI (Lint, Test, Build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Frontend
+        uses: actions/checkout@v4
+        with:
+          repository: scooter-rental-system/frontend
+          ref: ${{ github.event.inputs.target_branch || github.ref_name || 'develop' }}
+          path: frontend
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run ESLint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run Frontend Tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build Frontend Bundle
+        working-directory: frontend
+        run: npm run build
+
+  deploy-ec2:
+    name: Deploy to EC2 Server (http://65.0.5.214)
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infra Repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH and Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST || '65.0.5.214' }}
+          username: ${{ secrets.EC2_USER || 'ubuntu' }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT || 22 }}
+          script_stop: true
+          envs: TARGET_BRANCH
+          script: |
+            TARGET_BRANCH="${{ github.event.inputs.target_branch || github.ref_name || 'develop' }}"
+            echo ">>> Deploying branch $TARGET_BRANCH to EC2..."
+            
+            # Ensure base directories exist
+            sudo mkdir -p /opt/scooter-rent
+            sudo chown -R $USER:$USER /opt/scooter-rent
+            
+            # Sync infra repository
+            if [ ! -d "/opt/scooter-rent/infra/.git" ]; then
+              git clone https://github.com/scooter-rental-system/infra.git /opt/scooter-rent/infra
+            fi
+            cd /opt/scooter-rent/infra
+            git fetch origin
+            git checkout "$TARGET_BRANCH"
+            git pull origin "$TARGET_BRANCH"
+            
+            # Ensure .env is present (from template if not existing)
+            if [ ! -f .env ]; then
+              cp .env.example .env
+            fi
+            
+            # Make scripts executable and trigger deploy
+            chmod +x scripts/*.sh
+            ./scripts/deploy.sh "$TARGET_BRANCH"
