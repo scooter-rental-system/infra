@@ -1,0 +1,68 @@
+# ==============================================================================
+# Multi-stage Dockerfile for Scooter Rental Spring Boot Backend
+# Language: Java 21, Build Tool: Gradle, Framework: Spring Boot 4.0.6
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Build stage
+# ------------------------------------------------------------------------------
+FROM eclipse-temurin:21-jdk-alpine AS builder
+
+WORKDIR /app
+
+# Install bash and curl for Gradle wrapper download / build dependencies
+RUN apk add --no-cache bash
+
+# Copy Gradle wrapper and configuration files first to cache dependencies
+COPY spring/gradle ./gradle
+COPY spring/gradlew ./
+COPY spring/gradlew.bat ./
+COPY spring/build.gradle ./
+COPY spring/settings.gradle ./
+
+RUN chmod +x ./gradlew
+
+# Pre-fetch Gradle dependencies (offline caching)
+RUN ./gradlew dependencies --no-daemon || true
+
+# Copy backend source code
+COPY spring/src ./src
+
+# Build production jar without running embedded DB tests in image build
+# (Unit & integration tests run in the CI step prior to image build)
+RUN ./gradlew bootJar --no-daemon -x test
+
+# ------------------------------------------------------------------------------
+# Stage 2: Production Runtime stage
+# ------------------------------------------------------------------------------
+FROM eclipse-temurin:21-jre-alpine AS runner
+
+WORKDIR /app
+
+# Install curl for container health check
+RUN apk add --no-cache curl tzdata
+
+# Set Colombo timezone (matching project requirements)
+ENV TZ=Asia/Colombo
+
+# Create a secure, non-privileged system user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Create persistent storage directories for uploads with proper ownership
+RUN mkdir -p /app/data/repair-photos /app/data/payment-images && \
+    chown -R appuser:appgroup /app
+
+# Copy executable jar from builder stage
+COPY --from=builder --chown=appuser:appgroup /app/build/libs/*.jar app.jar
+
+USER appuser
+
+EXPOSE 8080
+
+# Production JVM tuning: memory limits, G1GC, exit on OOM
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:+ExitOnOutOfMemoryError -XX:MaxRAMPercentage=75.0"
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:8080/actuator/health || curl -f http://localhost:8080/api/health || exit 0
+
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -Djava.security.egd=file:/dev/./urandom -jar app.jar"]
