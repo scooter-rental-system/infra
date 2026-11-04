@@ -1,0 +1,31 @@
+name: Infra CI Validation
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+  push:
+    branches-ignore:
+      - develop
+      - main
+
+jobs:
+  validate-infra:
+    name: Validate Docker & Compose Configurations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infra Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose Config (Syntax & Schema)
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet
+          echo "Docker Compose configurations are syntactically valid."
+
+      - name: Lint Shell Scripts
+        run: |
+          bash -n scripts/setup-ec2.sh
+          bash -n scripts/deploy.sh
+          echo "Shell scripts passed syntax checks."

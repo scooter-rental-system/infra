@@ -1,0 +1,92 @@
+# ==============================================================================
+# Docker Compose for Scooter Rental System (Local / Development)
+# Starts: PostgreSQL 16, Spring Boot Backend, Nginx + React Frontend
+# ==============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: scooter-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scooter_rent_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-scooter_rent_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scooter-network
+
+  backend:
+    build:
+      context: ${BACKEND_PATH:-../backend}
+      dockerfile: ${INFRA_DOCKER_PATH:-docker}/Dockerfile.backend
+    container_name: scooter-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-scooter_rent_db}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-change_me_to_a_random_32_character_string_for_production_use!}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5173,http://65.0.5.214}
+      APP_FRONTEND_URL: ${APP_FRONTEND_URL:-http://localhost}
+      PAYMENTS_PROVIDER: ${PAYMENTS_PROVIDER:-stripe}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      GPS_DEVICE_API_KEY: ${GPS_DEVICE_API_KEY:-}
+      NOTIFICATIONS_EMAIL_PROVIDER: ${NOTIFICATIONS_EMAIL_PROVIDER:-}
+      NOTIFICATIONS_EMAIL_FROM: ${NOTIFICATIONS_EMAIL_FROM:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      REPAIR_PHOTO_DIR: /app/data/repair-photos
+      PAYMENT_IMAGE_DIR: /app/data/payment-images
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend_repair_photos:/app/data/repair-photos
+      - backend_payment_images:/app/data/payment-images
+    networks:
+      - scooter-network
+
+  frontend:
+    build:
+      context: ${FRONTEND_PATH:-../frontend}
+      dockerfile: ${INFRA_DOCKER_PATH:-docker}/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+    container_name: scooter-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - scooter-network
+
+networks:
+  scooter-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: scooter_postgres_data
+  backend_repair_photos:
+    name: scooter_repair_photos
+  backend_payment_images:
+    name: scooter_payment_images
